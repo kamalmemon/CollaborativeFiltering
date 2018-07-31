@@ -1,14 +1,10 @@
-# CollaborativeFiltering
-
 # Collaborative Filtering in Recommendation Systems
 
 #### Individual Studies in Computer Science CS-E4004 - Aalto University
 #### Aristides Gionis 
 
 #### Gadidjah Ögmundsdóttir
-#### Muhammad Kamal Memon 
-
-## Introduction
+#### Muhammad Kamal Memon
 
 This repository has the report and code for a study on comparison of various methods of Collaborative filtering.
 
