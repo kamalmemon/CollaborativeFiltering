@@ -1,0 +1,1587 @@
+{
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": 78,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "%matplotlib inline\n",
+    "%reload_ext autoreload\n",
+    "%autoreload 2\n",
+    "import pandas as pd\n",
+    "import numpy as np\n",
+    "from surprise import Reader, Dataset as SurpriseDataset\n",
+    "from sklearn import preprocessing\n",
+    "from surprise import SVD, NMF, KNNWithMeans, evaluate, GridSearch\n",
+    "import seaborn as sns\n",
+    "import matplotlib.pyplot as plt\n",
+    "import seaborn as sns; sns.set()\n",
+    "from surprise.model_selection import cross_validate\n",
+    "import warnings\n",
+    "from collections import defaultdict\n",
+    "import torch\n",
+    "from fastai.learner import *\n",
+    "from fastai.column_data import *\n",
+    "from fastai.imports import *\n",
+    "warnings.filterwarnings('ignore')"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### Book-Crossing Dataset"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 5,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style>\n",
+       "    .dataframe thead tr:only-child th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: left;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th></th>\n",
+       "      <th>User-ID</th>\n",
+       "      <th>ISBN</th>\n",
+       "      <th>Book-Rating</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>0</th>\n",
+       "      <td>276725</td>\n",
+       "      <td>034545104X</td>\n",
+       "      <td>0</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>1</th>\n",
+       "      <td>276726</td>\n",
+       "      <td>0155061224</td>\n",
+       "      <td>5</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>2</th>\n",
+       "      <td>276727</td>\n",
+       "      <td>0446520802</td>\n",
+       "      <td>0</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>3</th>\n",
+       "      <td>276729</td>\n",
+       "      <td>052165615X</td>\n",
+       "      <td>3</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>4</th>\n",
+       "      <td>276729</td>\n",
+       "      <td>0521795028</td>\n",
+       "      <td>6</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "   User-ID        ISBN  Book-Rating\n",
+       "0   276725  034545104X            0\n",
+       "1   276726  0155061224            5\n",
+       "2   276727  0446520802            0\n",
+       "3   276729  052165615X            3\n",
+       "4   276729  0521795028            6"
+      ]
+     },
+     "execution_count": 5,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "#loading data\n",
+    "df_br = pd.read_csv('BX-Book-Ratings.csv', sep=';', encoding = \"ISO-8859-1\")\n",
+    "df_br.head()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 6,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "##Preprocessing \n",
+    "df_br.ISBN = df_br.ISBN.str.replace(r'[^\\w\\d]+', '')\n",
+    "le = preprocessing.LabelEncoder()\n",
+    "le.fit(df['ISBN'])\n",
+    "df_br.ISBN = le.transform(df['ISBN']) \n",
+    "\n",
+    "# Replaced the zero rating with the average rating and remove zero rating books\n",
+    "avg_ratings = df_br.groupby('ISBN')['Book-Rating'].mean().round().astype(np.int8)\n",
+    "df_br.loc[df['Book-Rating'] == 0, 'Book-Rating'] = df_br.loc[df_br['Book-Rating'] == 0, 'ISBN'].map(avg_ratings)\n",
+    "df_br = df_br[df_br['Book-Rating'] != 0]"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 7,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style>\n",
+       "    .dataframe thead tr:only-child th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: left;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th></th>\n",
+       "      <th>User-ID</th>\n",
+       "      <th>ISBN</th>\n",
+       "      <th>Book-Rating</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>257992</th>\n",
+       "      <td>59820</td>\n",
+       "      <td>121100</td>\n",
+       "      <td>6</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>489875</th>\n",
+       "      <td>116605</td>\n",
+       "      <td>169531</td>\n",
+       "      <td>7</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>267225</th>\n",
+       "      <td>61845</td>\n",
+       "      <td>214617</td>\n",
+       "      <td>2</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>208674</th>\n",
+       "      <td>48313</td>\n",
+       "      <td>164306</td>\n",
+       "      <td>2</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>536237</th>\n",
+       "      <td>129358</td>\n",
+       "      <td>64058</td>\n",
+       "      <td>3</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "        User-ID    ISBN  Book-Rating\n",
+       "257992    59820  121100            6\n",
+       "489875   116605  169531            7\n",
+       "267225    61845  214617            2\n",
+       "208674    48313  164306            2\n",
+       "536237   129358   64058            3"
+      ]
+     },
+     "execution_count": 7,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "df_br.sample(5)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 8,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style>\n",
+       "    .dataframe thead tr:only-child th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: left;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th></th>\n",
+       "      <th>User-ID</th>\n",
+       "      <th>ISBN</th>\n",
+       "      <th>Book-Rating</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>count</th>\n",
+       "      <td>923737.000000</td>\n",
+       "      <td>923737.000000</td>\n",
+       "      <td>923737.000000</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>mean</th>\n",
+       "      <td>138885.071174</td>\n",
+       "      <td>134982.640115</td>\n",
+       "      <td>5.042225</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>std</th>\n",
+       "      <td>80605.266431</td>\n",
+       "      <td>84248.193255</td>\n",
+       "      <td>2.844468</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>min</th>\n",
+       "      <td>8.000000</td>\n",
+       "      <td>0.000000</td>\n",
+       "      <td>1.000000</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>25%</th>\n",
+       "      <td>69355.000000</td>\n",
+       "      <td>73920.000000</td>\n",
+       "      <td>3.000000</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>50%</th>\n",
+       "      <td>138198.000000</td>\n",
+       "      <td>117966.000000</td>\n",
+       "      <td>4.000000</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>75%</th>\n",
+       "      <td>209373.000000</td>\n",
+       "      <td>187724.000000</td>\n",
+       "      <td>8.000000</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>max</th>\n",
+       "      <td>278854.000000</td>\n",
+       "      <td>340555.000000</td>\n",
+       "      <td>10.000000</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "             User-ID           ISBN    Book-Rating\n",
+       "count  923737.000000  923737.000000  923737.000000\n",
+       "mean   138885.071174  134982.640115       5.042225\n",
+       "std     80605.266431   84248.193255       2.844468\n",
+       "min         8.000000       0.000000       1.000000\n",
+       "25%     69355.000000   73920.000000       3.000000\n",
+       "50%    138198.000000  117966.000000       4.000000\n",
+       "75%    209373.000000  187724.000000       8.000000\n",
+       "max    278854.000000  340555.000000      10.000000"
+      ]
+     },
+     "execution_count": 8,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "df_br.describe()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 22,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "data_br = SurpriseDataset.load_from_df(df_br, reader=Reader(rating_scale=(1, 10)))"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "#### Grid Search"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "#grid search for SVD hyperparameters\n",
+    "param_grid = {'lr_all': [0.001, 0.002, 0.003, 0.004, 0.005],\n",
+    "              'reg_all': [0.1, 0.2, 0.3, 0.4]}\n",
+    "grid_search = GridSearch(SVD, param_grid, measures=['RMSE'])\n",
+    "grid_search.evaluate(data_br)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "#grid search for NMF hyperparameters\n",
+    "param_grid = {'lr_all': [0.001, 0.002, 0.003, 0.004, 0.005],\n",
+    "              'reg_all': [0.1, 0.2, 0.3, 0.4]}\n",
+    "grid_search = GridSearch(NMF, param_grid, measures=['RMSE'])\n",
+    "grid_search.evaluate(data_br)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "#### SVD"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 16,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Evaluating RMSE of algorithm SVD on 3 split(s).\n",
+      "\n",
+      "                  Fold 1  Fold 2  Fold 3  Mean    Std     \n",
+      "RMSE (testset)    1.6479  1.6461  1.6516  1.6485  0.0023  \n",
+      "Fit time          89.90   95.09   82.65   89.21   5.10    \n",
+      "Test time         5.38    4.91    3.74    4.68    0.69    \n"
+     ]
+    }
+   ],
+   "source": [
+    "algo = SVD(n_factors=100, n_epochs=30, lr_all=0.005, reg_all=0.03)\n",
+    "cross_validate(algo, data_br, measures=['RMSE'], cv=3, verbose=True)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "#### NMF"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 54,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Evaluating RMSE of algorithm NMF on 3 split(s).\n",
+      "\n",
+      "                  Fold 1  Fold 2  Fold 3  Mean    Std     \n",
+      "RMSE (testset)    2.4404  2.4532  2.4369  2.4435  0.0070  \n",
+      "Fit time          0.55    0.58    0.61    0.58    0.03    \n",
+      "Test time         0.02    0.02    0.01    0.02    0.00    \n"
+     ]
+    }
+   ],
+   "source": [
+    "algo = NMF(n_factors=30, n_epochs=50, reg_pu=0.5, reg_qi=0.05)\n",
+    "cross_validate(algo, data_br, measures=['RMSE'], cv=3, verbose=True)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "#### KNNwithMeans"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 55,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Computing the msd similarity matrix...\n",
+      "Done computing similarity matrix.\n",
+      "Computing the msd similarity matrix...\n",
+      "Done computing similarity matrix.\n",
+      "Computing the msd similarity matrix...\n",
+      "Done computing similarity matrix.\n",
+      "Evaluating RMSE of algorithm KNNWithMeans on 3 split(s).\n",
+      "\n",
+      "                  Fold 1  Fold 2  Fold 3  Mean    Std     \n",
+      "RMSE (testset)    1.8602  1.8512  1.8627  1.9780  0.0049  \n",
+      "Fit time          0.08    0.07    0.05    0.07    0.01    \n",
+      "Test time         0.02    0.02    0.02    0.02    0.00    \n"
+     ]
+    }
+   ],
+   "source": [
+    "algo = KNNWithMeans(k=40)\n",
+    "cross_validate(algo, data_br2, measures=['RMSE'], cv=3, verbose=True)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "#### Fast.ai"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 96,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      " Mean squared error on predictions =  1.8569\n"
+     ]
+    }
+   ],
+   "source": [
+    "df_br = df_br.astype(float)\n",
+    "val_indx = get_cv_idxs(len(df_br))  # index for validation set\n",
+    "wd = 2e-4 # weight decay\n",
+    "n_factors = 50 # n_factors\n",
+    "cf = CollabFilterDataset.from_data_frame('.', df_br, 'User-ID', 'ISBN', 'Book-Rating')\n",
+    "cf.users = cf.users.astype(float)\n",
+    "\n",
+    "learn = cf.get_learner(n_factors, val_indx, bs=64, opt_fn=optim.Adam)\n",
+    "learn.fit(1e-2,2, wds = wd, cycle_len=1, cycle_mult=2)\n",
+    "\n",
+    "#prediction on validation\n",
+    "preds = learn.predict() \n",
+    "y=learn.data.val_y\n",
+    "print(' Mean squared error on predictions = ', math.sqrt(metrics.mean_squared_error(y,preds)))"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### MovieLens Dataset"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 40,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "u_cols = ['user_id', 'age', 'sex', 'occupation', 'zip_code']\n",
+    "users = pd.read_csv('ml-100k/u.user', sep='|', names=u_cols,\n",
+    "                    encoding='latin-1')\n",
+    "\n",
+    "r_cols = ['user_id', 'movie_id', 'rating', 'unix_timestamp']\n",
+    "ratings = pd.read_csv('ml-100k/u.data', sep='\\t', names=r_cols,\n",
+    "                      encoding='latin-1')\n",
+    "\n",
+    "m_cols = ['movie_id', 'title', 'release_date', 'video_release_date', 'imdb_url']\n",
+    "movies = pd.read_csv('ml-100k/u.item', sep='|', names=m_cols, usecols=range(5),\n",
+    "                     encoding='latin-1')"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 45,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "(100000, 943, 1682)"
+      ]
+     },
+     "execution_count": 45,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "len(ratings), ratings.user_id.unique().size, ratings.movie_id.unique().size"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 46,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style>\n",
+       "    .dataframe thead tr:only-child th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: left;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th></th>\n",
+       "      <th>user_id</th>\n",
+       "      <th>movie_id</th>\n",
+       "      <th>rating</th>\n",
+       "      <th>unix_timestamp</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>57542</th>\n",
+       "      <td>269</td>\n",
+       "      <td>663</td>\n",
+       "      <td>4</td>\n",
+       "      <td>891449880</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>83619</th>\n",
+       "      <td>936</td>\n",
+       "      <td>1190</td>\n",
+       "      <td>3</td>\n",
+       "      <td>886833707</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>21564</th>\n",
+       "      <td>44</td>\n",
+       "      <td>1</td>\n",
+       "      <td>4</td>\n",
+       "      <td>878341315</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>15062</th>\n",
+       "      <td>377</td>\n",
+       "      <td>323</td>\n",
+       "      <td>2</td>\n",
+       "      <td>891297001</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>99514</th>\n",
+       "      <td>732</td>\n",
+       "      <td>269</td>\n",
+       "      <td>5</td>\n",
+       "      <td>882589593</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "       user_id  movie_id  rating  unix_timestamp\n",
+       "57542      269       663       4       891449880\n",
+       "83619      936      1190       3       886833707\n",
+       "21564       44         1       4       878341315\n",
+       "15062      377       323       2       891297001\n",
+       "99514      732       269       5       882589593"
+      ]
+     },
+     "execution_count": 46,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "ratings.sample(5)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 47,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style>\n",
+       "    .dataframe thead tr:only-child th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: left;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th></th>\n",
+       "      <th>user_id</th>\n",
+       "      <th>movie_id</th>\n",
+       "      <th>rating</th>\n",
+       "      <th>unix_timestamp</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>count</th>\n",
+       "      <td>100000.00000</td>\n",
+       "      <td>100000.000000</td>\n",
+       "      <td>100000.000000</td>\n",
+       "      <td>1.000000e+05</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>mean</th>\n",
+       "      <td>462.48475</td>\n",
+       "      <td>425.530130</td>\n",
+       "      <td>3.529860</td>\n",
+       "      <td>8.835289e+08</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>std</th>\n",
+       "      <td>266.61442</td>\n",
+       "      <td>330.798356</td>\n",
+       "      <td>1.125674</td>\n",
+       "      <td>5.343856e+06</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>min</th>\n",
+       "      <td>1.00000</td>\n",
+       "      <td>1.000000</td>\n",
+       "      <td>1.000000</td>\n",
+       "      <td>8.747247e+08</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>25%</th>\n",
+       "      <td>254.00000</td>\n",
+       "      <td>175.000000</td>\n",
+       "      <td>3.000000</td>\n",
+       "      <td>8.794487e+08</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>50%</th>\n",
+       "      <td>447.00000</td>\n",
+       "      <td>322.000000</td>\n",
+       "      <td>4.000000</td>\n",
+       "      <td>8.828269e+08</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>75%</th>\n",
+       "      <td>682.00000</td>\n",
+       "      <td>631.000000</td>\n",
+       "      <td>4.000000</td>\n",
+       "      <td>8.882600e+08</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>max</th>\n",
+       "      <td>943.00000</td>\n",
+       "      <td>1682.000000</td>\n",
+       "      <td>5.000000</td>\n",
+       "      <td>8.932866e+08</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "            user_id       movie_id         rating  unix_timestamp\n",
+       "count  100000.00000  100000.000000  100000.000000    1.000000e+05\n",
+       "mean      462.48475     425.530130       3.529860    8.835289e+08\n",
+       "std       266.61442     330.798356       1.125674    5.343856e+06\n",
+       "min         1.00000       1.000000       1.000000    8.747247e+08\n",
+       "25%       254.00000     175.000000       3.000000    8.794487e+08\n",
+       "50%       447.00000     322.000000       4.000000    8.828269e+08\n",
+       "75%       682.00000     631.000000       4.000000    8.882600e+08\n",
+       "max       943.00000    1682.000000       5.000000    8.932866e+08"
+      ]
+     },
+     "execution_count": 47,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "ratings.describe()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 52,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "data_ml = SurpriseDataset.load_from_df(ratings[ratings.columns[0:3]] , reader=Reader(rating_scale=(1, 5)))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "#grid search for hyperparameters\n",
+    "param_grid = {'lr_all': [0.001, 0.002, 0.003, 0.004, 0.005],\n",
+    "              'reg_all': [0.1, 0.2, 0.3, 0.4]}\n",
+    "grid_search = GridSearch(SVD, param_grid, measures=['RMSE'])\n",
+    "grid_search.evaluate(data_ml)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "#grid search for hyperparameters\n",
+    "param_grid = {'lr_all': [0.001, 0.002, 0.003, 0.004, 0.005],\n",
+    "              'reg_all': [0.1, 0.2, 0.3, 0.4]}\n",
+    "grid_search = GridSearch(NMF, param_grid, measures=['RMSE'])\n",
+    "grid_search.evaluate(data_ml)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "#### SVD"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 57,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Evaluating RMSE of algorithm SVD on 3 split(s).\n",
+      "\n",
+      "                  Fold 1  Fold 2  Fold 3  Mean    Std     \n",
+      "RMSE (testset)    0.9444  0.9477  0.9435  0.9452  0.0018  \n",
+      "Fit time          3.01    2.96    4.57    3.51    0.75    \n",
+      "Test time         0.45    0.30    0.36    0.37    0.06    \n"
+     ]
+    }
+   ],
+   "source": [
+    "algo = SVD(n_factors=50, n_epochs=15, lr_all=0.002, reg_all=0.02)\n",
+    "cross_validate(algo, data_ml, measures=['RMSE'], cv=3, verbose=True)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "#### NMF"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 59,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Evaluating RMSE of algorithm NMF on 3 split(s).\n",
+      "\n",
+      "                  Fold 1  Fold 2  Fold 3  Mean    Std     \n",
+      "RMSE (testset)    0.9737  0.9702  0.9760  0.9733  0.0024  \n",
+      "Fit time          0.37    0.36    0.35    0.36    0.01    \n",
+      "Test time         0.01    0.01    0.01    0.01    0.00    \n"
+     ]
+    }
+   ],
+   "source": [
+    "algo = NMF(n_factors=15, n_epochs=50, reg_pu=0.02, reg_qi=0.02)\n",
+    "cross_validate(algo, data_ml, measures=['RMSE'], cv=3, verbose=True)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "#### KNNwithMeans"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 62,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Computing the msd similarity matrix...\n",
+      "Done computing similarity matrix.\n",
+      "Computing the msd similarity matrix...\n",
+      "Done computing similarity matrix.\n",
+      "Computing the msd similarity matrix...\n",
+      "Done computing similarity matrix.\n",
+      "Evaluating RMSE of algorithm KNNWithMeans on 3 split(s).\n",
+      "\n",
+      "                  Fold 1  Fold 2  Fold 3  Mean    Std     \n",
+      "RMSE (testset)    0.9536  0.9609  0.9526  0.9557  0.0037  \n",
+      "Fit time          0.50    1.01    0.85    0.79    0.21    \n",
+      "Test time         6.24    8.51    7.63    7.46    0.94    \n"
+     ]
+    }
+   ],
+   "source": [
+    "algo = KNNWithMeans(k=20)\n",
+    "cross_validate(algo, data_ml, measures=['RMSE'], cv=3, verbose=True)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "#### Fast.ai"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 97,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      " Mean squared error on predictions =  0.87488\n"
+     ]
+    }
+   ],
+   "source": [
+    "ratings = ratings[ratings.columns[0:3]]\n",
+    "ratings = ratings.astype(float)\n",
+    "val_indx = get_cv_idxs(len(ratings))  # index for validation set\n",
+    "wd = 1e-4 # weight decay\n",
+    "n_factors = 50 # n_factors\n",
+    "cf = CollabFilterDataset.from_data_frame('.', ratings, 'user_id', 'movie_id', 'rating')\n",
+    "cf.users = cf.users.astype(float)\n",
+    "\n",
+    "learn = cf.get_learner(n_factors, val_indx, bs=32, opt_fn=optim.Adam)\n",
+    "learn.fit(1e-2,5, wds = wd, cycle_len=1, cycle_mult=2)\n",
+    "\n",
+    "#prediction on validation\n",
+    "preds = learn.predict() \n",
+    "y=learn.data.val_y\n",
+    "print(' Mean squared error on predictions = ', math.sqrt(metrics.mean_squared_error(y,preds)))"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### Jester Dataset"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 66,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "df_jester = pd.read_csv('jester_ratings.csv')"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 67,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style>\n",
+       "    .dataframe thead tr:only-child th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: left;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th></th>\n",
+       "      <th>user_id</th>\n",
+       "      <th>joke_id</th>\n",
+       "      <th>rating</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>619937</th>\n",
+       "      <td>36087</td>\n",
+       "      <td>13</td>\n",
+       "      <td>-3.281</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>201980</th>\n",
+       "      <td>52448</td>\n",
+       "      <td>124</td>\n",
+       "      <td>9.062</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>222448</th>\n",
+       "      <td>42072</td>\n",
+       "      <td>19</td>\n",
+       "      <td>-1.938</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>798012</th>\n",
+       "      <td>38087</td>\n",
+       "      <td>150</td>\n",
+       "      <td>-0.688</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>341176</th>\n",
+       "      <td>63759</td>\n",
+       "      <td>48</td>\n",
+       "      <td>0.188</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "        user_id  joke_id  rating\n",
+       "619937    36087       13  -3.281\n",
+       "201980    52448      124   9.062\n",
+       "222448    42072       19  -1.938\n",
+       "798012    38087      150  -0.688\n",
+       "341176    63759       48   0.188"
+      ]
+     },
+     "execution_count": 67,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "df_jester.sample(5)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 68,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style>\n",
+       "    .dataframe thead tr:only-child th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: left;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th></th>\n",
+       "      <th>user_id</th>\n",
+       "      <th>joke_id</th>\n",
+       "      <th>rating</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>count</th>\n",
+       "      <td>1000000.000000</td>\n",
+       "      <td>1000000.000000</td>\n",
+       "      <td>1000000.000000</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>mean</th>\n",
+       "      <td>32737.979550</td>\n",
+       "      <td>70.710539</td>\n",
+       "      <td>1.618454</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>std</th>\n",
+       "      <td>18282.777812</td>\n",
+       "      <td>46.004394</td>\n",
+       "      <td>5.303466</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>min</th>\n",
+       "      <td>1.000000</td>\n",
+       "      <td>5.000000</td>\n",
+       "      <td>-10.000000</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>25%</th>\n",
+       "      <td>17217.000000</td>\n",
+       "      <td>21.000000</td>\n",
+       "      <td>-2.031000</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>50%</th>\n",
+       "      <td>34837.000000</td>\n",
+       "      <td>69.000000</td>\n",
+       "      <td>2.250000</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>75%</th>\n",
+       "      <td>47302.000000</td>\n",
+       "      <td>112.000000</td>\n",
+       "      <td>5.719000</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>max</th>\n",
+       "      <td>63978.000000</td>\n",
+       "      <td>150.000000</td>\n",
+       "      <td>10.000000</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "              user_id         joke_id          rating\n",
+       "count  1000000.000000  1000000.000000  1000000.000000\n",
+       "mean     32737.979550       70.710539        1.618454\n",
+       "std      18282.777812       46.004394        5.303466\n",
+       "min          1.000000        5.000000      -10.000000\n",
+       "25%      17217.000000       21.000000       -2.031000\n",
+       "50%      34837.000000       69.000000        2.250000\n",
+       "75%      47302.000000      112.000000        5.719000\n",
+       "max      63978.000000      150.000000       10.000000"
+      ]
+     },
+     "execution_count": 68,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "df_jester.describe() "
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 70,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "data_jst = SurpriseDataset.load_from_df(df_jester, reader=Reader(rating_scale=(-10, 10)))"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "#### Grid Search"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "#grid search for SVD hyperparameters\n",
+    "param_grid = {'lr_all': [0.001, 0.002, 0.003, 0.004, 0.005],\n",
+    "              'reg_all': [0.1, 0.2, 0.3, 0.4]}\n",
+    "grid_search = GridSearch(SVD, param_grid, measures=['RMSE'])\n",
+    "grid_search.evaluate(data_jst)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "#grid search for NMF hyperparameters\n",
+    "param_grid = {'lr_all': [0.001, 0.002, 0.003, 0.004, 0.005],\n",
+    "              'reg_all': [0.1, 0.2, 0.3, 0.4]}\n",
+    "grid_search = GridSearch(NMF, param_grid, measures=['RMSE'])\n",
+    "grid_search.evaluate(data_jst)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "#### SVD"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 16,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Evaluating RMSE of algorithm SVD on 3 split(s).\n",
+      "\n",
+      "                  Fold 1  Fold 2  Fold 3  Mean    Std     \n",
+      "RMSE (testset)    4.3871  4.3857  4.3769  4.3833  0.0045  \n",
+      "Fit time          89.90   95.09   82.65   89.21   5.10    \n",
+      "Test time         5.38    4.91    3.74    4.68    0.69    \n"
+     ]
+    }
+   ],
+   "source": [
+    "algo = SVD(n_factors=100, n_epochs=20, lr_all=0.001, reg_all=0.02)\n",
+    "cross_validate(algo, data_jst, measures=['RMSE'], cv=3, verbose=True)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "#### NMF"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 54,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Evaluating RMSE of algorithm NMF on 3 split(s).\n",
+      "\n",
+      "                  Fold 1  Fold 2  Fold 3  Mean    Std     \n",
+      "RMSE (testset)    7.4298  7.4325  7.3367  7.3997  0.0445  \n",
+      "Fit time          0.55    0.58    0.61    0.58    0.03    \n",
+      "Test time         0.02    0.02    0.01    0.02    0.00    \n"
+     ]
+    }
+   ],
+   "source": [
+    "algo = NMF(n_factors=40, n_epochs=50, reg_pu=0.6, reg_qi=0.06)\n",
+    "cross_validate(algo, data_jst, measures=['RMSE'], cv=3, verbose=True)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "#### KNNWithMeans"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 62,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Computing the msd similarity matrix...\n",
+      "Done computing similarity matrix.\n",
+      "Computing the msd similarity matrix...\n",
+      "Done computing similarity matrix.\n",
+      "Computing the msd similarity matrix...\n",
+      "Done computing similarity matrix.\n",
+      "Evaluating RMSE of algorithm KNNWithMeans on 3 split(s).\n",
+      "\n",
+      "                  Fold 1  Fold 2  Fold 3  Mean    Std     \n",
+      "RMSE (testset)    5.1290  5.1470  5.1131  5.1297  0.0138  \n",
+      "Fit time          0.50    1.01    0.85    0.79    0.21    \n",
+      "Test time         6.24    8.51    7.63    7.46    0.94    \n"
+     ]
+    }
+   ],
+   "source": [
+    "algo = KNNWithMeans(k=40)\n",
+    "cross_validate(algo, data_jst, measures=['RMSE'], cv=3, verbose=True)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "#### Fast.ai"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 98,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      " Mean squared error on predictions =  5.358969\n"
+     ]
+    }
+   ],
+   "source": [
+    "df_jester = df_jester.astype(float)\n",
+    "val_indx = get_cv_idxs(len(df_jester))  # index for validation set\n",
+    "wd = 1e-4 # weight decay\n",
+    "n_factors = 20 # n_factors\n",
+    "cf = CollabFilterDataset.from_data_frame('.', df_jester, 'user_id', 'joke_id', 'rating')\n",
+    "cf.users = cf.users.astype(float)\n",
+    "\n",
+    "learn = cf.get_learner(n_factors, val_indx, bs=32, opt_fn=optim.Adam)\n",
+    "learn.fit(1e-2,5, wds = wd, cycle_len=1, cycle_mult=2)\n",
+    "\n",
+    "#prediction on validation\n",
+    "preds = learn.predict() \n",
+    "y=learn.data.val_y\n",
+    "print(' Mean squared error on predictions = ', math.sqrt(metrics.mean_squared_error(y,preds)))"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Example Recommendations"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 73,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "def get_top_n(predictions, n=10):\n",
+    "\n",
+    "    # First map the predictions to each user.\n",
+    "    top_n = defaultdict(list)\n",
+    "    for uid, iid, true_r, est, _ in predictions:\n",
+    "        top_n[uid].append((iid, est))\n",
+    "\n",
+    "    # Then sort the predictions for each user and retrieve the k highest ones.\n",
+    "    for uid, user_ratings in top_n.items():\n",
+    "        user_ratings.sort(key=lambda x: x[1], reverse=True)\n",
+    "        top_n[uid] = user_ratings[:n]\n",
+    "\n",
+    "    return top_n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 74,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "<surprise.prediction_algorithms.matrix_factorization.SVD at 0x1a24e629e8>"
+      ]
+     },
+     "execution_count": 74,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "trainset = data_ml.build_full_trainset()\n",
+    "algo = SVD()\n",
+    "algo.train(trainset)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 75,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "testset = trainset.build_anti_testset()\n",
+    "predictions = algo.test(testset)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 80,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "top_n = get_top_n(predictions, n=10)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 93,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style>\n",
+       "    .dataframe thead tr:only-child th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: left;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th></th>\n",
+       "      <th>movie_id</th>\n",
+       "      <th>prediction</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>0</th>\n",
+       "      <td>173</td>\n",
+       "      <td>4.446725</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>1</th>\n",
+       "      <td>318</td>\n",
+       "      <td>4.441936</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>2</th>\n",
+       "      <td>12</td>\n",
+       "      <td>4.430570</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>3</th>\n",
+       "      <td>172</td>\n",
+       "      <td>4.348763</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>4</th>\n",
+       "      <td>483</td>\n",
+       "      <td>4.318119</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>5</th>\n",
+       "      <td>174</td>\n",
+       "      <td>4.293846</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>6</th>\n",
+       "      <td>14</td>\n",
+       "      <td>4.273068</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>7</th>\n",
+       "      <td>408</td>\n",
+       "      <td>4.269838</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>8</th>\n",
+       "      <td>527</td>\n",
+       "      <td>4.243179</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>9</th>\n",
+       "      <td>64</td>\n",
+       "      <td>4.229018</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "   movie_id  prediction\n",
+       "0       173    4.446725\n",
+       "1       318    4.441936\n",
+       "2        12    4.430570\n",
+       "3       172    4.348763\n",
+       "4       483    4.318119\n",
+       "5       174    4.293846\n",
+       "6        14    4.273068\n",
+       "7       408    4.269838\n",
+       "8       527    4.243179\n",
+       "9        64    4.229018"
+      ]
+     },
+     "execution_count": 93,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "# Prediction for user_id = 68\n",
+    "top_pred = pd.DataFrame.from_dict(top_n[68])\n",
+    "top_pred.columns = ['movie_id', 'prediction']\n",
+    "top_pred"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Comparison"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 94,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Results from RMSE scores\n",
+    "\n",
+    "#KMeans\n",
+    "Kme = (1.9780, 0.9557, 5.1297 )\n",
+    "\n",
+    "#SVD\n",
+    "\n",
+    "SVDM = (1.6485, 0.9452, 4.3833)\n",
+    "\n",
+    "#DL\n",
+    "\n",
+    "DL = (1.8569, 0.76542, 5.358969)\n",
+    "\n",
+    "#NMF\n",
+    "\n",
+    "NMF = (2.4435, 0.9733, 7.3997)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 95,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "<matplotlib.legend.Legend at 0x1a2828fb38>"
+      ]
+     },
+     "execution_count": 95,
+     "metadata": {},
+     "output_type": "execute_result"
+    },
+    {
+     "data": {
+      "image/png": "iVBORw0KGgoAAAANSUhEUgAAAkkAAAHgCAYAAACxe/mPAAAABHNCSVQICAgIfAhkiAAAAAlwSFlz\nAAALEgAACxIB0t1+/AAAADl0RVh0U29mdHdhcmUAbWF0cGxvdGxpYiB2ZXJzaW9uIDIuMS4wLCBo\ndHRwOi8vbWF0cGxvdGxpYi5vcmcvpW3flQAAIABJREFUeJzt3Xl4jPf+//HXJBEEbSwJSlPiVLQc\nTdAiotZaoo5wRCmxO4rWGvu+xlIlqmqXViunWlE7oZZagxbfUvRnO2qPYwkSIsn8/nAylfpkaZuN\nPB/X1etq5r7nvt8zcsvTfc9MLFar1SoAAAAkYZfVAwAAAGRHRBIAAIABkQQAAGBAJAEAABgQSQAA\nAAZEEgAAgAGRhGfWhQsX5OHhYfuvXLly8vLyUtu2bXXy5Mm/vP09e/aoXbt2xmUff/yxbb87d+6U\nJMXGxsrLy0seHh5q1qzZX95/WsTGxmrixIny8fFRhQoVVLduXQUHByshISFT9v9nVKlSRQEBAU/c\nHhERkeTP8/H/bty4kQWTJmW1WtW3b19VqVJFNWvW1K1bt55YZ8uWLfL391fFihVVo0YN9e3bV7/+\n+quk5B/fqFGjMmTeu3fvKigoSKGhoZKksLAweXh4aMuWLX952xMnTpSHh4cuXLjwl7cFZCWHrB4A\nyGgNGjRQmzZtZLVade7cOU2YMEHjx4/XF1988Ze2++mnn+rEiRMprmNnZ6ddu3apZs2a+uGHHxQd\nHS07u8z7t8ncuXP1+eefq3///rYfgHPmzFHBggXVvn37TJsjPbVp00YNGjRIcluBAgWyaJrfXL16\nVRs2bFDVqlXVpUsXOTs7J1m+atUqDRo0SG+++aamTZumK1euaObMmTp06JA2btxoW+/3j69o0aIZ\nMu+xY8cUEhKioUOHZsj2gWcBkYRnnqurqypXrqyEhAQVKlRIuXLlUlxcnCQpISFBc+fO1ddff61b\nt27Jw8NDAwcOVOXKlSVJBw8e1NSpU3Xy5Em5uLioVatW6tq1qz755BPt379fkuTh4ZHsmalXX31V\nu3btkiTt3r1bhQsXVu7cuW3Lo6KiNGHCBG3btk158+ZVs2bN1LdvX9nb2+vrr7/Wp59+qmvXrsnZ\n2VnvvvuuevbsqYiICLVv317du3fXtm3bdOHCBfn4+GjatGnKkydPkv1fu3ZNkuTs7CxPT095e3ur\nfPnyKl26tCTp+vXrGjlypPbt2yd3d3e9/PLLWrlypQ4cOKDjx4+rffv2Gjp0qDp27Gjbb+LXyc0X\nFhamoUOHqmnTptq2bZs6deokf39/jRkzRhEREXJ2dlb79u3VsWNHSdJ3332nqVOn6tatW2revHmq\nZ7lefPFF25+PJFksFuXKlcu434iICF25ckXFixfXTz/9pLCwMD18+FCTJk3S4cOH9fzzz8vX11d9\n+vRRnjx5FBAQ8MT6ic+VJD148EAfffSR1q5dq5iYGHl6emro0KF6+eWXVatWLUmPzghZrVbb14mC\ng4NVrFgxffLJJ3J0dJQklShRQjdu3NDDhw+TfXyPf78kCggI0I0bN1S9enWtWbNGxYsXV48ePfTZ\nZ5/p2LFjeuONNxQcHCwnJyf9+OOPmjBhgs6ePauXXnpJAwcOVI0aNWyRHBQUpDt37qhEiRKSpB9+\n+EEzZ87UtWvX1LRpU40cOVKS9MsvvyT7vF29elUjR47UwYMH9corr+i5556zzXr58mUNGzZMR44c\nkdVqVaVKlTRp0qQMiz8gPXG5Dc+8L774QhUrVpSnp6eaN2+ul19+WaNHj5YkhYSEKDg4WLVq1dLU\nqVMVHx+vLl266Ny5c7p06ZK6deummJgYTZ06VW+99ZamT5+u+fPny8/PTx4eHnJyctKSJUuS3be3\nt7dOnTqly5cva9euXapevbosFotteVBQkHbv3q1BgwapS5cuWrJkiUJDQ3Xv3j0tW7ZMFSpU0Mcf\nf6yXXnpJs2bN0p07d2z3DQsLU9euXVWjRg2Fh4dr8+bNT+y/U6dOKlKkiEaNGqVq1aqpVatWunPn\njipVqiRJGjdunLZt26YPPvhArVu31oYNG9L0nKZlvjNnzmjChAlq2rSpBg4cqLNnz2rUqFFq0aKF\ngoKCtG3bNkVGRmrAgAGys7PTuHHjFBUVpXv37qW476lTp6pixYq2/7p06ZJk+eP7laTz58+rfPny\nGj9+vFxdXdW5c2fbGcW2bdsqJCREEydOtN3/8fUfD6TEfYeEhOidd97RhAkTdPHiRXXq1Em3bt3S\ntGnTJD06czl48OAk97tx44YuXryoihUr2gJJkurXr69WrVoliYrfP74HDx4Yn4dTp04pPj5ePXr0\n0PHjx9W/f3/5+vrK19dX33//vcLDw3X79m316NFDLi4uGjdunNzd3fX+++/r2rVrthnbtGkjPz8/\n23Z37typnj17qly5cvriiy/0f//3f7p3716Kz9v48eO1c+dO9e7dW35+ftq7d69teyEhITpw4IAm\nTpyoYcOG6dq1a8bvVSA74kwSnnm+vr7y8/PTtGnTdPXqVQUGBuqVV16R9OgSiKurq0aPHi2LxaKi\nRYvK399f4eHhcnR0VHR0tAYPHiwfHx81bNhQO3bs0KpVq/Tee+/p+eef16VLl+Tt7Z3svqtVq6YF\nCxZo1apVOnHihNq2batDhw7Zlm/fvl03btzQiBEjbLft2LFD7dq108KFC7V161Zt27ZNly9fltVq\nVVRUlG291q1bq1mzZipcuLA2b95sfF1OmTJlFB4erq1bt2rv3r3as2ePpk+frrNnzyooKEh79+5V\n5cqV1blzZ0nSvn37tHbtWuNjefw3GOXLly9N8zVu3FjR0dHav3+/rFZrknjYsWOHEhISFBMTo3/9\n619q2LCh6tSpo2+//TbZ51OSOnToIF9fX9vX+fPnT7I8cb+J7Ozs1K9fPzk6OmrLli2KjIzUuHHj\n9Pbbb0uSDhw4oDVr1mjs2LFPrP97q1atkpeXl3r37m27rV+/ftqzZ48tPIsVK6YKFSokuV/i2bG0\nvBbs94/PNIck5cqVSyNHjpTValVQUJCqVKmidu3aae/evQoLC9Pt27d1+PBh3bp1S9u3b9f27dtt\n9z148KDKly8vSSpVqpRefPFFHThwQJLUtWtX+fr66t69e4qIiFBkZKSuXbuW4vO2f/9+ValSxXZ2\ncP/+/Vq9erUkqWrVqlq6dKlmzJihN954Qz169NBbb72V6vMAZAdEEp55RYoUUa1atVS6dGk1a9ZM\nvXr10rp161S8eHHZ2dklObOTGAIWiyXZ1w49vn5qChUqpLJly2rBggWyWq2qXr26Pv30U9vyuLg4\nlS9f3vbi3KioKBUrVkyXL19W8+bN5enpqTZt2ihfvnxavHhxklBJjINcuXIlmf1xo0ePltVq1bhx\n49S0aVPFx8ercePGtheTOzg4JHmcj1/2SXyc8fHxkqSYmBjbsrTMl/ianPj4eFmtVtWuXVs9evRQ\nfHy87t+/rxIlSujs2bO25yGtz+8LL7wgT0/PZJf//rVAefPmtYWGadtWqzXJ7Y+v/3t/9vVkRYoU\nUdGiRXXs2DE9fPjQ9mc2a9Ys/fzzz7Yzm1Lqjy9Rnjx5ksyTL1++JDNarVbbn2fPnj1Vq1YtxcTE\nyMHBQaVLl9bp06eN2038vrK3t7dtJ7XnzWKx2L5PEr9OVLduXa1Zs0YRERE6cuSIhg0bppUrV2rB\nggWpPkYgqxFJyDHc3NzUt29fTZo0SZMmTdLHH3+sBg0aaObMmRo/fry8vb21YMECOTk5qWHDhpKk\nadOmadq0aYqOjtaRI0d0+vRpBQYGSnoUJ/fv39f69evVqFGjZH+Aent7a8mSJXJzc1PJkiWTLKtZ\ns6Y2bdqko0ePKjo6WtOnT1dgYKBKly6tmzdvytHRUVFRUfruu+8kpe1MxOOsVqu++uorOTo6ysfH\nR6dPn9alS5fk4+Nj2//atWv1+eefy87OTlu3brXdt3DhwpIenfF57bXX9Pnnn9uWHTt2LNX5Ep+P\nAgUKyNPTUwcPHtSZM2d08uRJhYSEaMaMGapWrZoKFCighQsXqkCBAtqxY0eSYDI5d+6c9uzZk+S2\nv//970/s1/R11apV5ezsrHnz5il//vy6dOmSdu/erXfeece2Xkoh1KBBA3399deaPXu2ypQpo+Dg\nYLm6uqpGjRpJLjWafPDBBxoxYoR69+6tFi1a6OzZs5o/f77c3d3l6uqq8+fPp3j/P6NSpUpycnLS\nli1bVK5cOS1fvlz79+9XeHi4LdSOHTum48ePp7id1J43Hx8fbdiwQQsXLtRzzz2nTZs22e47bNgw\n24vW69evr3379unixYvp/liBjEAkIUcJCAjQ+vXrFR4erp07d+pf//qX4uLitGLFCoWFhalcuXJa\nvHix3NzcJEnz58/XjBkzFBgYKBcXFw0YMMD2GphmzZrpp59+0tSpU+Xt7f3EGYxE1atX15IlS1S9\nevUnlo0ZM0YODg6aM2eOYmNj1apVK3Xo0EEJCQmqV6+eduzYoUOHDqlSpUr6z3/+o19++eUPvZNr\n2LBhyps3r8LDw/Xvf/9bBQoUkK+vr4YMGSJJGjJkiG7evKkZM2bI09NTb7zxhnbv3i3p0aW69u3b\na/Xq1Ro4cKA6duxoixMfH59k5zOZNWuWxowZo8mTJ8vOzk7vvfeeGjduLIvFolmzZmn8+PEaNWqU\nGjVqpJdffjnFxxQaGmp723qiL7/8Mk3PR/78+bVkyRJNmTJFw4YN0/PPP69OnTqpT58+abr/8OHD\nlSdPHoWGhiomJkZeXl627aQWSf7+/nJyctKCBQvUr18/Pffcc2rSpIkGDRpkO2uT3goVKqRFixYp\n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\nBQAAAABJRU5ErkJggg==\n",
+      "text/plain": [
+       "<matplotlib.figure.Figure at 0x1a24bbaa90>"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    }
+   ],
+   "source": [
+    "N = 3\n",
+    "fig, ax = plt.subplots(figsize=(10,8))\n",
+    "\n",
+    "c = sns.color_palette(palette='colorblind', n_colors=4)\n",
+    "\n",
+    "ind = np.arange(N)    # the x locations for the groups\n",
+    "width = 0.15         # the width of the bars\n",
+    "p1 = ax.bar(ind, SVDM, width, color=c[0], bottom=0)\n",
+    "\n",
+    "p2 = ax.bar(ind+ width, NMF, width, color=c[1], bottom=0)\n",
+    "\n",
+    "p3 = ax.bar(ind+ width*2, Kme, width, color=c[2], bottom=0)\n",
+    "\n",
+    "p4 = ax.bar(ind+ width*3, DL, width, color=c[3], bottom=0)\n",
+    "\n",
+    "\n",
+    "ax.set_title('Root Mean Squared Error of CF methods', weight='semibold')\n",
+    "ax.set_xticks(ind + width*1.5)\n",
+    "ax.set_xticklabels(('Book-Crossing', 'MovieLens', 'Jester'), weight='semibold', size='medium')\n",
+    "\n",
+    "ax.legend((p1[0], p2[0], p3[0], p4[0]), ('SVD', 'NMF', 'KNNwithMeans', 'DL'), fontsize='medium')"
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.6.3"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 2
+}
